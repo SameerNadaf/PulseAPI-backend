@@ -8,19 +8,19 @@ export type HTTPMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
 // Endpoint Status
 export type EndpointStatus = "healthy" | "degraded" | "down" | "unknown";
 
-// Endpoint Model
+// Endpoint Model (matches D1 schema)
 export interface Endpoint {
   id: string;
   user_id: string;
   name: string;
   url: string;
   method: HTTPMethod;
-  headers?: Record<string, string>;
+  headers?: string | Record<string, string>;
   body?: string;
   probe_interval_minutes: number;
   timeout_seconds: number;
-  expected_status_codes: number[];
-  is_active: boolean;
+  expected_status_codes: string | number[];
+  is_active: number; // SQLite uses 0/1 for boolean
   created_at: string;
   updated_at: string;
 }
@@ -38,6 +38,19 @@ export interface ProbeResult {
   status_code?: number;
   error_message?: string;
   region: string;
+}
+
+// Baseline
+export interface Baseline {
+  id: string;
+  endpoint_id: string;
+  avg_latency_ms: number;
+  p50_latency_ms?: number;
+  p95_latency_ms?: number;
+  p99_latency_ms?: number;
+  std_deviation?: number;
+  sample_count: number;
+  calculated_at: string;
 }
 
 // Incident Types
@@ -65,9 +78,18 @@ export interface Incident {
   resolved_at?: string;
   title: string;
   description?: string;
-  affected_regions?: string[];
+  affected_regions?: string; // JSON array
   created_at: string;
   updated_at: string;
+}
+
+// Incident Timeline Entry
+export interface IncidentTimelineEntry {
+  id: string;
+  incident_id: string;
+  status: IncidentStatus;
+  message: string;
+  timestamp: string;
 }
 
 // Endpoint Health Summary (for KV cache)
@@ -104,4 +126,19 @@ export interface APIResponse<T> {
     limit?: number;
     total?: number;
   };
+}
+
+// Dashboard Summary
+export interface DashboardSummary {
+  overallHealth: number;
+  endpointCount: number;
+  healthyCount: number;
+  degradedCount: number;
+  downCount: number;
+  activeIncidentCount: number;
+  endpoints: Array<{
+    endpoint: { id: string; name: string };
+    health: EndpointHealthSummary | null;
+  }>;
+  recentIncidents: Incident[];
 }
