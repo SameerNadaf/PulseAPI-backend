@@ -1,0 +1,36 @@
+name = "pulseapi-backend"
+main = "src/index.ts"
+compatibility_date = "2024-01-15"
+
+# Environment variables
+[vars]
+ENVIRONMENT = "development"
+API_VERSION = "v1"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "pulseapi-db"
+database_id = "YOUR_D1_DATABASE_ID"  # Replace after creating D1 database
+
+# KV Namespace binding (for fast status cache)
+[[kv_namespaces]]
+binding = "STATUS_KV"
+id = "YOUR_KV_NAMESPACE_ID"  # Replace after creating KV namespace
+
+# Cron Triggers for scheduled probing
+[triggers]
+crons = ["*/5 * * * *"]  # Every 5 minutes
+
+# Development settings
+[dev]
+port = 8787
+local_protocol = "http"
+
+# Production environment overrides
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+# Staging environment overrides
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
