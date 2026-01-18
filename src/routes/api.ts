@@ -267,6 +267,109 @@ incidentsRoutes.get("/:id", async (c) => {
   }
 });
 
+// Update incident status
+incidentsRoutes.patch("/:id/status", async (c) => {
+  const incidentId = c.req.param("id");
+
+  try {
+    const { status, message } = await c.req.json<{
+      status: string;
+      message: string;
+    }>();
+
+    // Validate status
+    const validStatuses = [
+      "active",
+      "investigating",
+      "identified",
+      "monitoring",
+      "resolved",
+    ];
+    if (!validStatuses.includes(status)) {
+      return c.json({ success: false, error: "Invalid status" }, 400);
+    }
+
+    // Get current incident
+    const incident = await c.env.DB.prepare(
+      "SELECT status FROM incidents WHERE id = ?",
+    )
+      .bind(incidentId)
+      .first<{ status: string }>();
+
+    if (!incident) {
+      return c.json({ success: false, error: "Incident not found" }, 404);
+    }
+
+    const now = new Date().toISOString();
+    const resolvedAt = status === "resolved" ? now : null;
+
+    // Update incident
+    await c.env.DB.prepare(
+      `
+      UPDATE incidents 
+      SET status = ?, resolved_at = COALESCE(?, resolved_at), updated_at = ?
+      WHERE id = ?
+    `,
+    )
+      .bind(status, resolvedAt, now, incidentId)
+      .run();
+
+    // Add timeline entry
+    await c.env.DB.prepare(
+      `
+      INSERT INTO incident_timeline (id, incident_id, status, message, timestamp)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    )
+      .bind(crypto.randomUUID(), incidentId, status, message, now)
+      .run();
+
+    return c.json({
+      success: true,
+      data: { status, updatedAt: now },
+    });
+  } catch (error) {
+    console.error("Error updating incident status:", error);
+    return c.json({ success: false, error: "Failed to update status" }, 500);
+  }
+});
+
+// Get incident statistics
+incidentsRoutes.get("/stats/summary", async (c) => {
+  const userId = c.req.header("X-User-ID");
+  if (!userId) {
+    return c.json({ success: false, error: "User ID required" }, 401);
+  }
+
+  try {
+    const stats = await c.env.DB.prepare(
+      `
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN i.status != 'resolved' THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN i.status = 'resolved' THEN 1 ELSE 0 END) as resolved,
+        SUM(CASE WHEN i.severity = 'critical' THEN 1 ELSE 0 END) as critical,
+        SUM(CASE WHEN i.severity = 'major' THEN 1 ELSE 0 END) as major,
+        SUM(CASE WHEN i.severity = 'minor' THEN 1 ELSE 0 END) as minor
+      FROM incidents i
+      INNER JOIN endpoints e ON i.endpoint_id = e.id
+      WHERE e.user_id = ?
+        AND i.created_at >= datetime('now', '-30 days')
+    `,
+    )
+      .bind(userId)
+      .first();
+
+    return c.json({
+      success: true,
+      data: stats,
+    });
+  } catch (error) {
+    console.error("Error fetching incident stats:", error);
+    return c.json({ success: false, error: "Failed to fetch stats" }, 500);
+  }
+});
+
 // ============================================
 // PROBES ROUTES
 // ============================================
