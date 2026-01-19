@@ -87,6 +87,21 @@ endpointsRoutes.post("/", async (c) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
+    // Auto-create user if not exists (for Firebase Auth users)
+    const existingUser = await c.env.DB.prepare(
+      "SELECT id FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first();
+
+    if (!existingUser) {
+      await c.env.DB.prepare(
+        `INSERT INTO users (id, email, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+      )
+        .bind(userId, `${userId}@firebase.user`, now, now)
+        .run();
+    }
+
     await c.env.DB.prepare(
       `
       INSERT INTO endpoints (id, user_id, name, url, method, headers, body, probe_interval_minutes, timeout_seconds, expected_status_codes, is_active, created_at, updated_at)
@@ -112,7 +127,23 @@ endpointsRoutes.post("/", async (c) => {
     return c.json(
       {
         success: true,
-        data: { id, ...body, createdAt: now },
+        data: {
+          id,
+          userId,
+          name: body.name,
+          url: body.url,
+          method: body.method || "GET",
+          headers: body.headers ? JSON.stringify(body.headers) : null,
+          body: body.body || null,
+          probeIntervalMinutes: body.probeIntervalMinutes || 5,
+          timeoutSeconds: body.timeoutSeconds || 10,
+          expectedStatusCodes: JSON.stringify(
+            body.expectedStatusCodes || [200, 201, 204],
+          ),
+          isActive: 1,
+          createdAt: now,
+          updatedAt: now,
+        },
       },
       201,
     );
