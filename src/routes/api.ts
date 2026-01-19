@@ -52,26 +52,145 @@ endpointsRoutes.get("/:id", async (c) => {
       "SELECT * FROM endpoints WHERE id = ? AND user_id = ?",
     )
       .bind(endpointId, userId)
+      .first<any>();
+
+    if (!endpoint) {
+      return c.json({ success: false, error: "Endpoint not found" }, 404);
+    }
+
+    // Transform to camelCase for iOS
+    return c.json({
+      success: true,
+      data: {
+        id: endpoint.id,
+        userId: endpoint.user_id,
+        name: endpoint.name,
+        url: endpoint.url,
+        method: endpoint.method,
+        headers: endpoint.headers,
+        body: endpoint.body,
+        probeIntervalMinutes: endpoint.probe_interval_minutes,
+        timeoutSeconds: endpoint.timeout_seconds,
+        expectedStatusCodes: endpoint.expected_status_codes,
+        isActive: endpoint.is_active,
+        createdAt: endpoint.created_at,
+        updatedAt: endpoint.updated_at,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching endpoint:", error);
+    return c.json({ success: false, error: "Failed to fetch endpoint" }, 500);
+  }
+});
+
+// Get endpoint health summary
+endpointsRoutes.get("/:id/health", async (c) => {
+  const endpointId = c.req.param("id");
+  const userId = c.req.header("X-User-ID");
+
+  try {
+    // Verify endpoint exists and belongs to user
+    const endpoint = await c.env.DB.prepare(
+      "SELECT id FROM endpoints WHERE id = ? AND user_id = ?",
+    )
+      .bind(endpointId, userId)
       .first();
 
     if (!endpoint) {
       return c.json({ success: false, error: "Endpoint not found" }, 404);
     }
 
-    // Get health summary from KV cache
-    const healthKey = `health:${endpointId}`;
-    const cachedHealth = await c.env.STATUS_KV.get(healthKey, "json");
+    // Get recent probe stats (last 24 hours)
+    const stats = await c.env.DB.prepare(
+      `
+      SELECT 
+        COUNT(*) as total_probes,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+        AVG(latency_ms) as avg_latency_ms,
+        MAX(timestamp) as last_probe_at
+      FROM probe_results
+      WHERE endpoint_id = ?
+        AND timestamp >= datetime('now', '-24 hours')
+    `,
+    )
+      .bind(endpointId)
+      .first<any>();
+
+    // Get 30-day uptime stats
+    const uptimeStats = await c.env.DB.prepare(
+      `
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success
+      FROM probe_results
+      WHERE endpoint_id = ?
+        AND timestamp >= datetime('now', '-30 days')
+    `,
+    )
+      .bind(endpointId)
+      .first<any>();
+
+    // Get last incident
+    const lastIncident = await c.env.DB.prepare(
+      `
+      SELECT started_at FROM incidents 
+      WHERE endpoint_id = ? 
+      ORDER BY started_at DESC 
+      LIMIT 1
+    `,
+    )
+      .bind(endpointId)
+      .first<any>();
+
+    // Calculate metrics
+    const totalProbes = stats?.total_probes || 0;
+    const successCount = stats?.success_count || 0;
+    const errorRate =
+      totalProbes > 0 ? (totalProbes - successCount) / totalProbes : 0;
+    const uptimeTotal = uptimeStats?.total || 0;
+    const uptimeSuccess = uptimeStats?.success || 0;
+    const uptimePercentage =
+      uptimeTotal > 0 ? (uptimeSuccess / uptimeTotal) * 100 : 100;
+
+    // Reliability score (weighted: 60% uptime, 30% error rate, 10% latency)
+    const reliabilityScore = Math.max(
+      0,
+      Math.min(
+        100,
+        uptimePercentage * 0.6 +
+          (1 - errorRate) * 100 * 0.3 +
+          (stats?.avg_latency_ms
+            ? Math.max(0, 100 - stats.avg_latency_ms / 10)
+            : 100) *
+            0.1,
+      ),
+    );
+
+    // Determine status
+    let status = "healthy";
+    if (errorRate > 0.5 || uptimePercentage < 50) {
+      status = "down";
+    } else if (errorRate > 0.1 || uptimePercentage < 95) {
+      status = "degraded";
+    }
 
     return c.json({
       success: true,
       data: {
-        endpoint,
-        health: cachedHealth || null,
+        endpointId,
+        status,
+        reliabilityScore: Math.round(reliabilityScore * 10) / 10,
+        currentLatencyMs: stats?.avg_latency_ms || null,
+        baselineLatencyMs: null, // Would come from baselines table
+        errorRate: Math.round(errorRate * 1000) / 1000,
+        lastProbeAt: stats?.last_probe_at || null,
+        lastIncidentAt: lastIncident?.started_at || null,
+        uptimePercentage: Math.round(uptimePercentage * 100) / 100,
       },
     });
   } catch (error) {
-    console.error("Error fetching endpoint:", error);
-    return c.json({ success: false, error: "Failed to fetch endpoint" }, 500);
+    console.error("Error fetching endpoint health:", error);
+    return c.json({ success: false, error: "Failed to fetch health" }, 500);
   }
 });
 
@@ -422,11 +541,23 @@ probesRoutes.get("/history/:endpointId", async (c) => {
     `,
     )
       .bind(endpointId, limit)
-      .all();
+      .all<any>();
+
+    // Transform to camelCase for iOS
+    const transformedResults = results.map((r: any) => ({
+      id: r.id,
+      endpointId: r.endpoint_id,
+      timestamp: r.timestamp,
+      status: r.status,
+      latencyMs: r.latency_ms,
+      statusCode: r.status_code,
+      errorMessage: r.error_message,
+      region: r.region,
+    }));
 
     return c.json({
       success: true,
-      data: results,
+      data: transformedResults,
       meta: { total: results.length, hours },
     });
   } catch (error) {
@@ -460,11 +591,22 @@ probesRoutes.get("/stats/:endpointId", async (c) => {
     `,
     )
       .bind(endpointId)
-      .first();
+      .first<any>();
 
+    // Transform to camelCase for iOS
     return c.json({
       success: true,
-      data: stats,
+      data: stats
+        ? {
+            totalProbes: stats.total_probes,
+            successCount: stats.success_count,
+            errorCount: stats.error_count,
+            timeoutCount: stats.timeout_count,
+            avgLatencyMs: stats.avg_latency_ms,
+            minLatencyMs: stats.min_latency_ms,
+            maxLatencyMs: stats.max_latency_ms,
+          }
+        : null,
     });
   } catch (error) {
     console.error("Error fetching probe stats:", error);
