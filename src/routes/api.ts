@@ -29,11 +29,68 @@ endpointsRoutes.get("/", async (c) => {
       "SELECT * FROM endpoints WHERE user_id = ? ORDER BY created_at DESC",
     )
       .bind(userId)
-      .all();
+      .all<any>();
+
+    // For each endpoint, get the latest probe status
+    const endpointsWithHealth = await Promise.all(
+      results.map(async (endpoint: any) => {
+        // Get latest probe result
+        const latestProbe = await c.env.DB.prepare(
+          `SELECT status, latency_ms FROM probe_results 
+           WHERE endpoint_id = ? 
+           ORDER BY timestamp DESC LIMIT 1`,
+        )
+          .bind(endpoint.id)
+          .first<any>();
+
+        // Get recent stats for determining status
+        const stats = await c.env.DB.prepare(
+          `SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count
+           FROM probe_results
+           WHERE endpoint_id = ? AND timestamp >= datetime('now', '-1 hour')`,
+        )
+          .bind(endpoint.id)
+          .first<any>();
+
+        // Calculate status
+        let status = "unknown";
+        if (stats && stats.total > 0) {
+          const successRate = stats.success_count / stats.total;
+          if (successRate >= 0.95) {
+            status = "healthy";
+          } else if (successRate >= 0.5) {
+            status = "degraded";
+          } else {
+            status = "down";
+          }
+        }
+
+        return {
+          id: endpoint.id,
+          userId: endpoint.user_id,
+          name: endpoint.name,
+          url: endpoint.url,
+          method: endpoint.method,
+          headers: endpoint.headers,
+          body: endpoint.body,
+          probeIntervalMinutes: endpoint.probe_interval_minutes,
+          timeoutSeconds: endpoint.timeout_seconds,
+          expectedStatusCodes: endpoint.expected_status_codes,
+          isActive: endpoint.is_active,
+          createdAt: endpoint.created_at,
+          updatedAt: endpoint.updated_at,
+          // Health data
+          status,
+          latencyMs: latestProbe?.latency_ms || null,
+        };
+      }),
+    );
 
     return c.json({
       success: true,
-      data: results,
+      data: endpointsWithHealth,
       meta: { total: results.length },
     });
   } catch (error) {
